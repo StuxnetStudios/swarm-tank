@@ -45,11 +45,11 @@ class RoleData:
 BOT_ROLES = {
     'scout': RoleData(
         color=CYAN,
-        max_speed=5.5,
-        max_force=0.18,
+        max_speed=4.0,  # Nerfed from 5.5
+        max_force=0.12, # Nerfed from 0.18
         description='Fast scouts - find food and alert others',
-        food_seek_weight=3.5,
-        shout_range=80
+        food_seek_weight=2.0,  # Nerfed from 3.5
+        shout_range=50  # Nerfed from 80
     ),
     'warrior': RoleData(
         color=PURPLE,
@@ -58,7 +58,7 @@ BOT_ROLES = {
         description='Warriors - protect swarm and taunt enemies',
         predator_avoid_weight=6.0,
         can_attack=True,
-        attack_range=15,
+        attack_range=25,  # Increased from 15 to 25
         attack_damage=20,
         taunt_range=60,
         taunt_force=0.8
@@ -92,9 +92,9 @@ BOT_ROLES = {
 
 # Role distribution weights (higher = more common)
 ROLE_WEIGHTS = {
-    'drone': 35,        # Reduced from 40
+    'drone': 30,        # Reduced from 35
     'scout': 20,        # Same
-    'harvester': 30,    # Increased from 20 to 30
-    'warrior': 10,      # Reduced from 15
+    'harvester': 30,    # Same
+    'warrior': 15,      # Increased from 10 to 15
     'leader': 5         # Same
 }
