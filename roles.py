@@ -51,11 +51,11 @@ BOT_ROLES = {
         food_seek_weight=2.0,  # Nerfed from 3.5
         shout_range=50  # Nerfed from 80
     ),
-    'warrior': RoleData(
+    'hunter': RoleData(
         color=PURPLE,
         max_speed=2.5,
         max_force=0.12,
-        description='Warriors - protect swarm and taunt enemies',
+        description='Hunters - protect swarm and taunt enemies',
         predator_avoid_weight=6.0,
         can_attack=True,
         attack_range=25,  # Increased from 15 to 25
@@ -71,7 +71,7 @@ BOT_ROLES = {
         cohesion_weight=2.0
     ),
     'harvester': RoleData(
-        color=MAGENTA,
+        color=GREEN,
         max_speed=3.2,
         max_force=0.11,
         description='Harvesters - collect & reproduce',
@@ -87,14 +87,38 @@ BOT_ROLES = {
         max_force=0.13,
         description='Leaders - maintain formation',
         cohesion_weight=1.5
+    ),
+    'gatherer': RoleData(
+        color=(0, 120, 255),  # Blue accent for gatherer
+        max_speed=3.0,
+        max_force=0.11,
+        description='Gatherers - collect food and deliver to home',
+        food_seek_weight=4.0,
+        food_detection_range=120,
+        burst_speed_multiplier=1.8,
+        priority_food_range=60,
+        reproduction_chance=0.4  # Match harvester
+    ),
+    'miner': RoleData(
+        color=(180, 120, 60),  # Brownish for miner
+        max_speed=2.8,
+        max_force=0.10,
+        description='Miners - collect ore from rocks and deliver to home',
+        ore_seek_weight=4.0,
+        ore_detection_range=120,
+        burst_speed_multiplier=1.7,
+        priority_ore_range=60,
+        reproduction_chance=0.3  # Slightly less than gatherer
     )
 }
 
 # Role distribution weights (higher = more common)
 ROLE_WEIGHTS = {
-    'drone': 30,        # Reduced from 35
-    'scout': 20,        # Same
-    'harvester': 30,    # Same
-    'warrior': 15,      # Increased from 10 to 15
-    'leader': 5         # Same
+    'drone': 5,         # Changed from 30 to 5 (5%)
+    'gatherer': 25,    # Added gatherer at 25 (25%)
+    'scout': 20,       # Same
+    'harvester': 30,   # Same
+    'hunter': 15,      # Same
+    'leader': 5,        # Same
+    'miner': 20        # Add miner at 20 (20%)
 }

@@ -4,7 +4,7 @@ class PredatorFood:
         from vector2d import Vector2D
         self.position = Vector2D(x, y)
         self.radius = 11  # Larger for visibility
-        self.energy_value = 40  # Twice as valuable as normal food (20)
+        self.health_value = 40  # Twice as valuable as normal food (20)
         self.color = (220, 0, 220)  # Brighter purple
         self.glow_intensity = 0
         self.glow_direction = 1

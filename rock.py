@@ -1,5 +1,3 @@
-# This file has been renamed to rock.py. Please use rock.py and the Rock class instead.
-
 import random
 import math
 import pygame
@@ -38,7 +36,7 @@ class Rock:
     def handle_rock_collisions(self, all_rocks: list) -> None:
         """Detect and resolve collisions with other rocks, changing direction on impact."""
         for other in all_rocks:
-            if other is self:
+            if other is self or getattr(other, 'is_home', False):
                 continue
             offset = self.position - other.position
             dist = offset.magnitude()
@@ -91,11 +89,6 @@ class Rock:
             color = (255, 255, 120)  # Bright yellow flash
         pygame.draw.circle(screen, color, (int(self.position.x)+ox, int(self.position.y)+oy), int(self.radius))
         pygame.draw.circle(screen, ROCK_OUTLINE, (int(self.position.x)+ox, int(self.position.y)+oy), int(self.radius), 2)
-        # Draw ore amount label above the rock
-        label_font = pygame.font.Font(None, 16)
-        ore_label = label_font.render(f"ORE: {self.ore_amount}", True, (200, 220, 255))
-        ore_label_rect = ore_label.get_rect(center=(int(self.position.x)+ox, int(self.position.y)+oy - self.radius - 10))  # type: ignore
-        screen.blit(ore_label, ore_label_rect)
         # Draw ore amount or X inside the rock
         if not self.depleted:
             font = pygame.font.Font(None, 18)

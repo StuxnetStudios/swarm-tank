@@ -15,21 +15,22 @@ from swarm_bot import SwarmBot
 from predator_food import PredatorFood
 
 def remove_dead_bots(game: 'Game', bots_to_remove: List['SwarmBot']) -> None:
-    """Remove dead bots (energy <= 0) from the swarm, handle leader death event, and last harvester event."""
-    # Check for dead leaders and spawn warriors if needed BEFORE removing dead bots
+    """Remove dead bots (health <= 0) from the swarm, handle leader death event, and last harvester event."""
+    # Check for dead leaders and spawn hunters if needed BEFORE removing dead bots
     dead_leaders = [bot for bot in bots_to_remove if bot.role == 'leader']
     if dead_leaders:
         print(f"WAR! event triggered for {len(dead_leaders)} leader(s): {[f'({bot.position.x:.1f},{bot.position.y:.1f})' for bot in dead_leaders]}")
-        game.screen_flash_timer = 90
-        game.leader_down_message_timer = 90
+        # game.screen_flash_timer = 90  # Disabled to prevent flickering
+        game.leader_down_message_timer = 90  # Show WAR! message for 1.5 seconds
         for dead_leader in dead_leaders:
             for _ in range(10):
-                new_warrior = SwarmBot(dead_leader.position.x, dead_leader.position.y, 'warrior', game.screen.get_width(), game.screen.get_height())
-                game.swarm_bots.append(new_warrior)
+                new_hunter = SwarmBot(dead_leader.position.x, dead_leader.position.y, 'hunter', game.screen.get_width(), game.screen.get_height())
+                game.swarm_bots.append(new_hunter)
     # Remove all dead bots
     for bot in bots_to_remove:
         if bot in game.swarm_bots:
             game.swarm_bots.remove(bot)
+            game.bots_died += 1
     # Check for last harvester death
     if not any(bot.role == 'harvester' for bot in game.swarm_bots):
         if not hasattr(game, 'no_breeders_message_timer') or game.no_breeders_message_timer == 0:

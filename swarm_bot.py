@@ -2,16 +2,17 @@
 SwarmBot class - Individual bot in the swarm
 """
 from __future__ import annotations
-import pygame
 import random
 import math
+import pygame
 from typing import List, Tuple, TYPE_CHECKING
 
 from vector2d import Vector2D
-from roles import BOT_ROLES, ROLE_WEIGHTS, WHITE, RED, ORANGE, YELLOW, CYAN
+from roles import BOT_ROLES, ROLE_WEIGHTS
+# Removed unused import: from rock import Rock
 
 if TYPE_CHECKING:
-    from entities import Food, PowerUp, Predator
+    from entities import Food, PowerUp, Predator, Home
 
 
 class SwarmBot:
@@ -35,7 +36,7 @@ class SwarmBot:
         self.max_force: float = self.role_data.max_force
         self.color = self.role_data.color
         self.radius = 3
-        self.energy = 100.0
+        self.health = 100.0
         self.trail: List[Tuple[float, float]] = []
         self.trail_length = 10
         
@@ -49,7 +50,7 @@ class SwarmBot:
         self.shouted_food: set[int] = set()
         self.target_food: Food | None = None
         
-        # Warrior taunt mechanism
+        # Hunter taunt mechanism
         self.taunt_cooldown = 0
         self.taunt_effect_timer = 0
         
@@ -60,7 +61,16 @@ class SwarmBot:
         
         # Reproduction system
         self.reproduction_cooldown = 0
-        self.reproduction_energy_threshold = 70.0  # Reduced from 80.0 to 70.0
+        self.reproduction_health_threshold = 70.0  # Reduced from 80.0 to 70.0
+    
+        # For visual feedback
+        self.last_attack_target_pos = None
+        # --- Gatherer food carrying ---
+        if self.role == 'gatherer':
+            self.carrying_food = 0  # Amount of food being carried (health value)
+        # --- Miner ore carrying ---
+        if self.role == 'miner':
+            self.carrying_ore = 0  # Amount of ore being carried
     
     def assign_random_role(self) -> str:
         """Assign a random role based on weights"""
@@ -69,8 +79,8 @@ class SwarmBot:
         return random.choices(roles, weights=weights)[0]
     
     def update_harvester_priority_targeting(self, food_list: List['Food'], power_ups: List['PowerUp']) -> None:
-        """Update harvester priority targeting and burst speed"""
-        if self.role != 'harvester':
+        """Update harvester/gatherer priority targeting and burst speed"""
+        if self.role not in ('harvester', 'gatherer'):
             return
             
         closest_target = None
@@ -136,12 +146,43 @@ class SwarmBot:
             if new_distance < current_distance:
                 self.target_food = food
     
+    def shout_predator_discovery(self, predator: 'Predator', nearby_bots: List['SwarmBot']) -> None:
+        """Scout shouts about discovered predator to nearby bots"""
+        if self.role != 'scout' or getattr(self, 'predator_shout_cooldown', 0) > 0:
+            return
+        pred_id = id(predator)
+        if not hasattr(self, 'shouted_predators'):
+            self.shouted_predators = set()
+        if pred_id in self.shouted_predators:
+            return
+        shout_range = float(self.role_data.get('shout_range', 80))
+        shouted_to_count = 0
+        for bot in nearby_bots:
+            if bot is self:
+                continue
+            distance = math.sqrt((self.position.x - bot.position.x)**2 + (self.position.y - bot.position.y)**2)
+            if distance <= shout_range:
+                bot.receive_predator_shout(predator)
+                shouted_to_count += 1
+        if shouted_to_count > 0:
+            self.shouted_predators.add(pred_id)
+            self.predator_shout_cooldown = 90  # Slightly longer cooldown for predator shouts
+
+    def receive_predator_shout(self, predator: 'Predator') -> None:
+        """Receive a shout about predator location from a scout"""
+        # Bots can use this info to avoid the predator more aggressively
+        if not hasattr(self, 'known_predators'):
+            self.known_predators = set()
+        self.known_predators.add(id(predator))
+        # Optionally, could set a temporary avoidance boost or panic state
+        self.avoid_predator_boost_timer = getattr(self, 'avoid_predator_boost_timer', 0) + 60
+
     def taunt_enemies(self, predators: List['Predator']) -> bool:
-        """Warrior taunts nearby predators to draw them away from the swarm"""
-        if self.role != 'warrior' or self.taunt_cooldown > 0:
+        """Hunter taunts nearby predators to draw them away from the swarm"""
+        if self.role != 'hunter' or self.taunt_cooldown > 0:
             return False
         
-        taunt_range = float(self.role_data.get('taunt_range', 60))
+        taunt_range = float(self.role_data.get('taunt_range', 60)) * 2  # Doubled aggro range
         taunt_force = float(self.role_data.get('taunt_force', 0.8))
         taunted_count = 0
         
@@ -156,7 +197,7 @@ class SwarmBot:
                     taunt_velocity = taunt_direction * taunt_force
                     predator.velocity = predator.velocity + taunt_velocity
                     
-                    # Warriors can damage predators when very close
+                    # Hunters can damage predators when very close
                     attack_range = float(self.role_data.get('attack_range', 15))
                     if distance <= attack_range:
                         attack_damage = float(self.role_data.get('attack_damage', 20))
@@ -177,10 +218,10 @@ class SwarmBot:
         return False
     
     def attempt_reproduction(self, swarm_bots: List['SwarmBot']) -> SwarmBot | None:
-        """Harvester attempts to reproduce when conditions are favorable"""
-        if (self.role != 'harvester' or 
+        """Harvester/Gatherer attempts to reproduce when conditions are favorable"""
+        if (self.role not in ('harvester', 'gatherer') or 
             self.reproduction_cooldown > 0 or 
-            self.energy < self.reproduction_energy_threshold):
+            self.health < self.reproduction_health_threshold):
             return None
         
         # Check if there's food nearby (encourages reproduction near resources)
@@ -216,18 +257,20 @@ class SwarmBot:
                     break
             
             if not too_crowded:
-                # Create new bot (could be any role, but slight bias toward harvester)
-                # 65% drone, 25% harvester, 10% random
+                # Create new bot (could be any role, but slight bias toward harvester/gatherer)
+                # 35% drone, 20% harvester, 40% gatherer, 5% random
                 roll = random.random()
-                if roll < 0.65:
+                if roll < 0.35:
                     new_role = 'drone'
-                elif roll < 0.90:
+                elif roll < 0.55:
                     new_role = 'harvester'
+                elif roll < 0.95:
+                    new_role = 'gatherer'
                 else:
                     new_role = None  # Random role
                 
                 new_bot = SwarmBot(spawn_x, spawn_y, new_role, self.screen_width, self.screen_height)
-                new_bot.energy = 60.0  # Start with decent energy
+                new_bot.health = 60.0  # Start with decent health
                 
                 # Inherit any active swarm buffs from parent
                 if self.speed_boost_timer > 0:
@@ -236,8 +279,8 @@ class SwarmBot:
                 if self.damage_boost_timer > 0:
                     new_bot.damage_boost_timer = self.damage_boost_timer
                 
-                # Parent pays energy cost for reproduction
-                self.energy -= 35.0  # Reduced from 40.0 to 35.0
+                # Parent pays health cost for reproduction
+                self.health -= 35.0  # Reduced from 40.0 to 35.0
                 self.reproduction_cooldown = 180  # Reduced from 300 to 180 (3 seconds at 60 FPS)
                 
                 return new_bot
@@ -245,7 +288,7 @@ class SwarmBot:
         return None
     
     def update(self, swarm_bots: List['SwarmBot'], food_list: List['Food'], 
-               power_ups: List['PowerUp'], predators: List['Predator'], obstacles: list = None) -> None:
+               power_ups: List['PowerUp'], predators: List['Predator'], rocks: list = None, home: 'Home' = None) -> None:
         """Update bot position and behavior"""
         # Update cooldowns
         if self.shout_cooldown > 0:
@@ -266,43 +309,155 @@ class SwarmBot:
         if self.damage_boost_timer > 0:
             self.damage_boost_timer -= 1
         
-        # Warrior auto-taunt
-        if (self.role == 'warrior' and self.taunt_cooldown == 0 and predators):
+        # Hunter auto-taunt
+        if (self.role == 'hunter' and self.taunt_cooldown == 0 and predators):
             for predator in predators:
                 distance = math.sqrt((self.position.x - predator.position.x)**2 + 
                                    (self.position.y - predator.position.y)**2)
                 if distance < float(self.role_data.get('taunt_range', 60)):
                     self.taunt_enemies(predators)
                     break
-        
         # Reset acceleration
         self.acceleration = Vector2D(0, 0)
-        
-        # Harvester priority targeting
-        if self.role == 'harvester':
-            self.update_harvester_priority_targeting(food_list, power_ups)
-        
-        # Apply swarm behaviors
-        sep = self.separate(swarm_bots) * 2.0
-        ali = self.align(swarm_bots) * 1.0
-        coh = self.cohesion(swarm_bots) * float(self.role_data.get('cohesion_weight', 1.0))
-        seek_food = self.seek_food(food_list, power_ups, swarm_bots) * float(self.role_data.get('food_seek_weight', 2.5))
-        # Only non-warriors avoid predators
-        if self.role != 'warrior':
-            avoid_predators = self.avoid_predators(predators) * float(self.role_data.get('predator_avoid_weight', 4.0))
+
+        # --- HUNTER: prioritize attacking predators over eating ---
+        if self.role == 'hunter' and predators:
+            # Find closest predator within hunt/aggro range
+            hunt_range = float(self.role_data.get('taunt_range', 60)) * 8  # quadruple range
+            closest_pred = None
+            closest_dist = float('inf')
+            for predator in predators:
+                dist = math.sqrt((self.position.x - predator.position.x)**2 + (self.position.y - predator.position.y)**2)
+                if dist < hunt_range and dist < closest_dist:
+                    closest_dist = dist
+                    closest_pred = predator
+            if closest_pred is not None:
+                # Seek the predator directly (override seek_food)
+                sep = self.separate(swarm_bots) * 4.0  # Stronger separation for hunters
+                ali = self.align(swarm_bots) * 1.0
+                coh = self.cohesion(swarm_bots) * float(self.role_data.get('cohesion_weight', 1.0))
+                avoid_predators = Vector2D(0, 0)  # Hunters don't avoid
+                seek_pred = (closest_pred.position - self.position).normalize() * self.max_speed
+                self.acceleration = self.acceleration + sep + ali + coh + (seek_pred - self.velocity).limit(self.max_force) + avoid_predators
+                # ...skip food seeking...
+            else:
+                # No predator in range, fallback to normal food seeking
+                sep = self.separate(swarm_bots) * 4.0  # Stronger separation for hunters
+                ali = self.align(swarm_bots) * 1.0
+                coh = self.cohesion(swarm_bots) * float(self.role_data.get('cohesion_weight', 1.0))
+                seek_food = self.seek_food(food_list, power_ups, swarm_bots) * float(self.role_data.get('food_seek_weight', 2.5))
+                avoid_predators = Vector2D(0, 0)
+                self.acceleration = self.acceleration + sep + ali + coh + seek_food + avoid_predators
         else:
-            avoid_predators = Vector2D(0, 0)
-        # Harvester burst mode adjustments
-        if self.role == 'harvester' and self.food_burst_active:
-            ali = ali * 0.3
-            coh = coh * 0.2
-            seek_food = seek_food * 1.5
-        
-        # Apply forces
-        self.acceleration = self.acceleration + sep + ali + coh + seek_food + avoid_predators
-        
+            # Harvester, Gatherer, Miner priority targeting
+            if self.role in ('harvester', 'gatherer'):
+                self.update_harvester_priority_targeting(food_list, power_ups)
+            # Miner: ore targeting
+            if self.role == 'miner':
+                self.update_miner_priority_targeting(rocks)
+            # Apply swarm behaviors
+            sep = self.separate(swarm_bots) * (2.0 if self.role != 'hunter' else 4.0)
+            ali = self.align(swarm_bots) * 1.0
+            coh = self.cohesion(swarm_bots) * float(self.role_data.get('cohesion_weight', 1.0))
+            if self.role == 'miner':
+                seek_ore = self.seek_ore(rocks) * float(self.role_data.get('ore_seek_weight', 2.5))
+            else:
+                seek_ore = Vector2D(0, 0)
+            seek_food = self.seek_food(food_list, power_ups, swarm_bots) * float(self.role_data.get('food_seek_weight', 2.5))
+            # Only non-hunters avoid predators
+            if self.role != 'hunter':
+                avoid_predators = self.avoid_predators(predators) * float(self.role_data.get('predator_avoid_weight', 4.0))
+            else:
+                avoid_predators = Vector2D(0, 0)
+            # Harvester/Gatherer burst mode adjustments
+            if self.role in ('harvester', 'gatherer') and self.food_burst_active:
+                ali = ali * 0.3
+                coh = coh * 0.2
+                seek_food = seek_food * 1.5
+            # Miner burst mode
+            if self.role == 'miner' and self.ore_burst_active:
+                ali = ali * 0.3
+                coh = coh * 0.2
+                seek_ore = seek_ore * 1.5
+            self.acceleration = self.acceleration + sep + ali + coh + seek_food + seek_ore + avoid_predators
+        # Gatherer delivery logic
+        if self.role == 'gatherer':
+            # If carrying food, seek Home
+            if getattr(self, 'carrying_food', 0) > 0 and home is not None:
+                # Seek Home instead of food
+                sep = self.separate(swarm_bots) * 2.0
+                ali = self.align(swarm_bots) * 1.0
+                coh = self.cohesion(swarm_bots) * float(self.role_data.get('cohesion_weight', 1.0))
+                seek_home = (home.position - self.position).normalize() * self.max_speed
+                avoid_predators = self.avoid_predators(predators) * float(self.role_data.get('predator_avoid_weight', 4.0))
+                self.acceleration = sep + ali + coh + (seek_home - self.velocity).limit(self.max_force) + avoid_predators
+            else:
+                # Only pick up food if not carrying and health >= 70
+                if getattr(self, 'carrying_food', 0) == 0:
+                    for food in list(food_list):
+                        distance = math.sqrt((self.position.x - food.position.x)**2 + (self.position.y - food.position.y)**2)
+                        if distance < self.radius + food.radius:
+                            if self.health < 70:
+                                self.health = min(100, self.health + food.health_value)
+                                food_list.remove(food)
+                                break
+                            else:
+                                self.carrying_food = food.health_value
+                                food_list.remove(food)
+                                break
+                # Only seek food if not carrying
+                if getattr(self, 'carrying_food', 0) == 0:
+                    # ...existing code for swarm behaviors and food seeking...
+                    sep = self.separate(swarm_bots) * 2.0
+                    ali = self.align(swarm_bots) * 1.0
+                    coh = self.cohesion(swarm_bots) * float(self.role_data.get('cohesion_weight', 1.0))
+                    seek_food = self.seek_food(food_list, power_ups, swarm_bots) * float(self.role_data.get('food_seek_weight', 2.5))
+                    avoid_predators = self.avoid_predators(predators) * float(self.role_data.get('predator_avoid_weight', 4.0))
+                    if self.food_burst_active:
+                        ali = ali * 0.3
+                        coh = coh * 0.2
+                        seek_food = seek_food * 1.5
+                    self.acceleration = sep + ali + coh + seek_food + avoid_predators
+        # Miner delivery logic
+        if self.role == 'miner':
+            # If carrying ore, seek Home
+            if getattr(self, 'carrying_ore', 0) > 0 and home is not None:
+                sep = self.separate(swarm_bots) * 2.0
+                ali = self.align(swarm_bots) * 1.0
+                coh = self.cohesion(swarm_bots) * float(self.role_data.get('cohesion_weight', 1.0))
+                seek_home = (home.position - self.position).normalize() * self.max_speed
+                avoid_predators = self.avoid_predators(predators) * float(self.role_data.get('predator_avoid_weight', 4.0))
+                self.acceleration = sep + ali + coh + (seek_home - self.velocity).limit(self.max_force) + avoid_predators
+            else:
+                # Only pick up ore if not carrying
+                if getattr(self, 'carrying_ore', 0) == 0:
+                    for rock in list(rocks):
+                        offset = self.position - rock.position
+                        distance = offset.magnitude()
+                        if distance < self.radius + getattr(rock, 'radius', 12) + 2:
+                            # Pick up ore from rock
+                            self.carrying_ore = 10  # Each rock gives 10 ore per pickup
+                            if hasattr(rock, 'on_mined'):
+                                rock.on_mined()
+                            break
+                # Only seek ore if not carrying
+                if getattr(self, 'carrying_ore', 0) == 0:
+                    sep = self.separate(swarm_bots) * 2.0
+                    ali = self.align(swarm_bots) * 1.0
+                    coh = self.cohesion(swarm_bots) * float(self.role_data.get('cohesion_weight', 1.0))
+                    seek_ore = self.seek_ore(rocks) * float(self.role_data.get('ore_seek_weight', 2.5))
+                    avoid_predators = self.avoid_predators(predators) * float(self.role_data.get('predator_avoid_weight', 4.0))
+                    if self.ore_burst_active:
+                        ali = ali * 0.3
+                        coh = coh * 0.2
+                        seek_ore = seek_ore * 1.5
+                    self.acceleration = sep + ali + coh + seek_ore + avoid_predators
         # Update velocity and position
-        self.velocity = self.velocity + self.acceleration
+        # Smooth turning: blend new velocity with previous velocity
+        smoothing = 0.7  # Higher = smoother, but less responsive
+        new_velocity = self.velocity + self.acceleration
+        new_velocity = new_velocity.limit(self.max_speed)
+        self.velocity = self.velocity * smoothing + new_velocity * (1 - smoothing)
         self.velocity = self.velocity.limit(self.max_speed)
         self.position = self.position + self.velocity
         
@@ -314,10 +469,10 @@ class SwarmBot:
         if len(self.trail) > self.trail_length:
             self.trail.pop(0)
         
-        # Decrease energy
-        self.energy -= 0.1
-        if self.energy < 0:
-            self.energy = 0
+        # Decrease health
+        self.health -= 0.1
+        if self.health < 0:
+            self.health = 0
 
         # PredatorFood collection (edible by both bots and predators)
         from predator_food import PredatorFood
@@ -325,343 +480,306 @@ class SwarmBot:
             if isinstance(food, PredatorFood):
                 distance = math.sqrt((self.position.x - food.position.x)**2 + (self.position.y - food.position.y)**2)
                 if distance < self.radius + food.radius:
-                    self.energy = min(100, self.energy + food.energy_value)
+                    self.health = min(100, self.health + food.health_value)
                     food_list.remove(food)
                     break
 
-        # Attempt reproduction (harvesters only)
-        if self.role == 'harvester':
+        # Attempt reproduction (harvesters and gatherers only)
+        if self.role in ('harvester', 'gatherer'):
             new_bot = self.attempt_reproduction(swarm_bots)
             if new_bot is not None:
                 swarm_bots.append(new_bot)
         
-        # Avoid obstacles or take damage if colliding
-        if obstacles:
-            for obstacle in obstacles:
-                offset = self.position - obstacle.position
+        # Avoid rocks or take damage if colliding
+        if rocks:
+            for rock in rocks:
+                offset = self.position - rock.position
                 dist = offset.magnitude()
-                min_dist = self.radius + obstacle.radius + 2
+                min_dist = self.radius + rock.radius + 2
+                # --- SOFT OBSTACLE LOGIC FOR HOME ---
+                is_home = hasattr(rock, 'is_home') and getattr(rock, 'is_home', False)
+                if is_home:
+                    # Only gently repel, no damage, and allow gatherers to pass through
+                    if self.role == 'gatherer':
+                        if dist < min_dist - 8:
+                            # Gently push out, no damage
+                            if dist > 0:
+                                push = offset.normalize() * (min_dist - dist + 1)
+                                self.position += push * 0.5  # Softer push
+                        continue  # No damage for gatherers
+                    else:
+                        if dist < min_dist:
+                            # Gently push out, no damage
+                            if dist > 0:
+                                push = offset.normalize() * (min_dist - dist + 1)
+                                self.position += push * 0.5
+                            continue  # No damage for any bot on Home
+                # --- END SOFT OBSTACLE LOGIC ---
                 if dist < min_dist:
-                    # Take damage if colliding
-                    self.energy -= 2.0  # Increased damage per frame in obstacle
-                    # Push bot out of obstacle
+                    self.health -= 2.0  # Increased damage per frame in rock
                     if dist > 0:
                         push = offset.normalize() * (min_dist - dist + 1)
                         self.position += push
-                        # Apply impact to obstacle (momentum transfer)
-                        if hasattr(obstacle, 'impact'):
-                            obstacle.impact(-push * 0.05)  # Much smaller velocity change
-                    # Flash obstacle
-                    if hasattr(obstacle, 'flash'):
-                        obstacle.flash()
+                        if hasattr(rock, 'impact'):
+                            rock.impact(-push * 0.05)
+                    if hasattr(rock, 'flash'):
+                        rock.flash()
                 elif dist < min_dist + 30:
-                    # Steer away if near
                     avoid_force = offset.normalize() * (1.5 * (min_dist + 30 - dist) / 30)
                     self.acceleration += avoid_force
     
-    def separate(self, neighbors: List['SwarmBot']) -> Vector2D:
-        """Separation: steer to avoid crowding local flockmates"""
-        desired_separation = 25
+    def default_repair_action(self, home: 'Home') -> bool:
+        # Drones repair Home if it's damaged and not on cooldown
+        if self.role == 'drone' and home.hitpoints < home.max_hitpoints and home.repair_cooldown == 0:
+            repair_amount = 50  # Drones repair 50 HP per action
+            home.repair(repair_amount)
+            return True
+        return False
+    
+    def wrap_around(self):
+        # Screen wrap-around logic
+        if self.position.x < 0:
+            self.position.x += self.screen_width
+        elif self.position.x > self.screen_width:
+            self.position.x -= self.screen_width
+        if self.position.y < 0:
+            self.position.y += self.screen_height
+        elif self.position.y > self.screen_height:
+            self.position.y -= self.screen_height
+
+    def avoid_predators(self, predators) -> 'Vector2D':
+        # Return a steering vector away from nearby predators
         steer = Vector2D(0, 0)
         count = 0
-        
-        for other in neighbors:
-            distance = math.sqrt((self.position.x - other.position.x)**2 + 
-                               (self.position.y - other.position.y)**2)
-            if 0 < distance < desired_separation:
-                diff = self.position - other.position
-                diff = diff.normalize()
-                diff = diff * (1.0 / distance)
-                steer = steer + diff
+        for predator in predators:
+            diff = self.position - predator.position
+            dist = diff.magnitude()
+            if dist < 80 and dist > 0:
+                steer += diff.normalize() / dist
                 count += 1
-        
         if count > 0:
-            steer = steer * (1.0 / count)
-            steer = steer.normalize()
-            steer = steer * self.max_speed
-            steer = steer - self.velocity
-            steer = steer.limit(self.max_force)
-        
+            steer = steer / count
+            if steer.magnitude() > 0:
+                steer = steer.normalize() * self.max_speed - self.velocity
+                if steer.magnitude() > self.max_force:
+                    steer = steer.normalize() * self.max_force
         return steer
-    
-    def align(self, neighbors: List['SwarmBot']) -> Vector2D:
-        """Alignment: steer towards the average heading of neighbors"""
-        neighbor_dist = 50
-        sum_vel = Vector2D(0, 0)
-        count = 0
-        
-        for other in neighbors:
-            distance = math.sqrt((self.position.x - other.position.x)**2 + 
-                               (self.position.y - other.position.y)**2)
-            if 0 < distance < neighbor_dist:
-                sum_vel = sum_vel + other.velocity
-                count += 1
-        
-        if count > 0:
-            sum_vel = sum_vel * (1.0 / count)
-            sum_vel = sum_vel.normalize()
-            sum_vel = sum_vel * self.max_speed
-            steer = sum_vel - self.velocity
-            steer = steer.limit(self.max_force)
-            return steer
-        
-        return Vector2D(0, 0)
-    
-    def cohesion(self, neighbors: List['SwarmBot']) -> Vector2D:
-        """Cohesion: steer to move toward the average position of neighbors"""
-        neighbor_dist = 50
-        sum_pos = Vector2D(0, 0)
-        count = 0
-        
-        for other in neighbors:
-            distance = math.sqrt((self.position.x - other.position.x)**2 + 
-                               (self.position.y - other.position.y)**2)
-            if 0 < distance < neighbor_dist:
-                sum_pos = sum_pos + other.position
-                count += 1
-        
-        if count > 0:
-            sum_pos = sum_pos * (1.0 / count)
-            return self.seek(sum_pos)
-        
-        return Vector2D(0, 0)
-    
-    def seek(self, target: Vector2D) -> Vector2D:
-        """Seek a target position"""
-        desired = target - self.position
-        desired = desired.normalize()
-        desired = desired * self.max_speed
-        
-        steer = desired - self.velocity
-        steer = steer.limit(self.max_force)
-        return steer
-    
-    def seek_food(self, food_list: List['Food'], power_ups: List['PowerUp'], nearby_bots: List['SwarmBot'] | None = None) -> Vector2D:
-        """Seek the nearest food or power-up, prioritizing PredatorFood at double range"""
-        from predator_food import PredatorFood
-        if not food_list and not power_ups:
+
+    def seek_ore(self, rocks: list) -> 'Vector2D':
+        # Seek the nearest rock with ore
+        if not rocks:
             return Vector2D(0, 0)
-        closest_target: Food | PowerUp | None = None
+        closest_rock = None
         closest_distance = float('inf')
-        # Priority for shouted food
-        if self.target_food is not None and self.target_food in food_list:
-            distance = math.sqrt((self.position.x - self.target_food.position.x)**2 + 
-                               (self.position.y - self.target_food.position.y)**2)
-            closest_distance = distance * 0.5  # High priority
-            closest_target = self.target_food
-        # Harvester priority target
-        if (self.role == 'harvester' and self.priority_food_target is not None and 
-            (self.priority_food_target in food_list or self.priority_food_target in power_ups)):
-            distance = math.sqrt((self.position.x - self.priority_food_target.position.x)**2 + 
-                               (self.position.y - self.priority_food_target.position.y)**2)
-            weighted_distance = distance * 0.3
-            if weighted_distance < closest_distance:
-                closest_distance = weighted_distance
-                closest_target = self.priority_food_target
-        # 1. PredatorFood at double range, always highest priority
-        predator_foods = [f for f in food_list if isinstance(f, PredatorFood)]
-        if predator_foods:
-            hunt_radius = float(self.role_data.get('priority_food_range', 60)) if self.role == 'harvester' else 60
-            for pf in predator_foods:
-                distance = math.sqrt((self.position.x - pf.position.x)**2 + (self.position.y - pf.position.y)**2)
-                if distance < hunt_radius * 2 and distance < closest_distance:
-                    closest_distance = distance
-                    closest_target = pf
-        # 2. Power-ups
-        for power_up in power_ups:
-            distance = math.sqrt((self.position.x - power_up.position.x)**2 + 
-                               (self.position.y - power_up.position.y)**2)
-            weighted_distance = distance * 0.7
-            if weighted_distance < closest_distance:
-                closest_distance = weighted_distance
-                closest_target = power_up
-        # 3. Regular food
-        for food in food_list:
-            if isinstance(food, PredatorFood):
-                continue
-            distance = math.sqrt((self.position.x - food.position.x)**2 + 
-                               (self.position.y - food.position.y)**2)
+        for rock in rocks:
+            distance = (self.position - rock.position).magnitude()
             if distance < closest_distance:
                 closest_distance = distance
-                closest_target = food
-        if closest_target is not None:
-            desired = closest_target.position - self.position
+                closest_rock = rock
+        if closest_rock is not None:
+            desired = closest_rock.position - self.position
             if desired.magnitude() > 0:
                 return desired.normalize() * self.max_speed
         return Vector2D(0, 0)
     
-    def avoid_predators(self, predators: List['Predator']) -> Vector2D:
-        """Avoid predators with enhanced fear response and anti-clumping jitter"""
+    def separate(self, swarm_bots: List['SwarmBot']) -> 'Vector2D':
+        # Steer to avoid crowding neighbors
+        desired_separation = 18.0
         steer = Vector2D(0, 0)
-        jitter_strength = 0.2  # Small random jitter to break up clumps
-        for predator in predators:
-            distance = math.sqrt((self.position.x - predator.position.x)**2 + 
-                               (self.position.y - predator.position.y)**2)
-            # Stronger base avoidance and panic multipliers
-            avoid_distance = 160  # Increased from 120
-            if distance < 40:
-                avoid_distance = 240
-                panic_multiplier = 4.0  # Increased
-            elif distance < 80:
-                avoid_distance = 180
-                panic_multiplier = 2.5  # Increased
-            else:
-                panic_multiplier = 1.2  # Slightly increased
-            if distance < avoid_distance and distance > 0:
-                diff = self.position - predator.position
-                diff = diff.normalize()
-                # Stronger avoidance force when closer
-                force_multiplier = (avoid_distance - distance) / avoid_distance
-                force_multiplier *= panic_multiplier
-                # Add random jitter to break up clumps
-                jitter = Vector2D(random.uniform(-jitter_strength, jitter_strength), random.uniform(-jitter_strength, jitter_strength))
-                diff = (diff + jitter).normalize()
-                diff = diff * force_multiplier
-                steer = steer + diff
+        count = 0
+        for other in swarm_bots:
+            if other is self:
+                continue
+            d = (self.position - other.position).magnitude()
+            if 0 < d < desired_separation:
+                diff = (self.position - other.position).normalize()
+                steer += diff / d
+                count += 1
+        if count > 0:
+            steer = steer / count
         if steer.magnitude() > 0:
-            steer = steer.normalize()
-            steer = steer * self.max_speed
-            steer = steer - self.velocity
-            steer = steer.limit(self.max_force * 3.5)  # Allow even stronger avoidance force
+            steer = steer.normalize() * self.max_speed - self.velocity
+            steer = steer.limit(self.max_force)
         return steer
-    
-    def wrap_around(self) -> None:
-        """Wrap around screen edges"""
-        if self.position.x < 0:
-            self.position.x = self.screen_width
-        elif self.position.x > self.screen_width:
-            self.position.x = 0
-        
-        if self.position.y < 0:
-            self.position.y = self.screen_height
-        elif self.position.y > self.screen_height:
-            self.position.y = 0
-    
-    def draw(self, screen: pygame.Surface, offset=(0, 0)) -> None:
-        """Draw the bot"""
-        ox, oy = offset
-        # Draw trail
-        if len(self.trail) > 1:
-            for i in range(1, len(self.trail)):
-                alpha = i / len(self.trail)
-                trail_color = (int(CYAN[0] * alpha), int(CYAN[1] * alpha), int(CYAN[2] * alpha))
-                if i > 0:
-                    x1, y1 = self.trail[i-1][0] + ox, self.trail[i-1][1] + oy
-                    x2, y2 = self.trail[i][0] + ox, self.trail[i][1] + oy
-                    pygame.draw.line(screen, trail_color, (x1, y1), (x2, y2), 1)
-        # Draw bot
-        color = self.color
-        if self.energy <= 10:
-            color = RED
-        elif self.energy < 30:
-            color = ORANGE
-        pygame.draw.circle(screen, color, (int(self.position.x)+ox, int(self.position.y)+oy), self.radius)
-        # Draw power-up buff effects
-        if self.speed_boost_timer > 0:
-            pulse_alpha = int(128 + 127 * math.sin(self.speed_boost_timer * 0.3))
-            speed_color = (0, pulse_alpha, 255)
-            pygame.draw.circle(screen, speed_color, (int(self.position.x)+ox, int(self.position.y)+oy), self.radius + 8, 2)
-        if self.damage_boost_timer > 0:
-            pulse_alpha = int(128 + 127 * math.sin(self.damage_boost_timer * 0.3))
-            damage_color = (255, pulse_alpha, 0)
-            pygame.draw.circle(screen, damage_color, (int(self.position.x)+ox, int(self.position.y)+oy), self.radius + 6, 2)
-        # Scout shouting: pulsing yellow ring and radiating lines when shout_cooldown just set
-        if self.role == 'scout' and self.shout_cooldown > 50:
-            shout_radius = int((60 - self.shout_cooldown) * 2)
-            pygame.draw.circle(screen, YELLOW, (int(self.position.x)+ox, int(self.position.y)+oy), shout_radius, 2)
-            num_lines = 8
-            for i in range(num_lines):
-                angle = (2 * math.pi / num_lines) * i
-                x1 = self.position.x + ox + math.cos(angle) * (self.radius + 2)
-                y1 = self.position.y + oy + math.sin(angle) * (self.radius + 2)
-                x2 = self.position.x + ox + math.cos(angle) * (shout_radius + 4)
-                y2 = self.position.y + oy + math.sin(angle) * (shout_radius + 4)
-                pygame.draw.line(screen, YELLOW, (x1, y1), (x2, y2), 2)
-        
-        if self.role == 'warrior' and self.taunt_effect_timer > 0:
-            # Enhanced taunt effect: pulsing magenta ring and exclamation icon
-            pulse_phase = (30 - self.taunt_effect_timer) / 30.0
-            base_radius = 15
-            max_radius = 28
-            ring_radius = int(base_radius + (max_radius - base_radius) * pulse_phase)
-            alpha = int(180 * (1 - pulse_phase) + 60)
-            # Draw pulsing ring (simulate alpha by drawing multiple rings)
-            for i in range(3):
-                pygame.draw.circle(
-                    screen,
-                    (255, 0, 180),
-                    (int(self.position.x)+ox, int(self.position.y)+oy),
-                    ring_radius + i * 2,
-                    2
-                )
-            # Draw exclamation mark above the bot
-            font = pygame.font.SysFont(None, 28)
-            ex_mark = font.render('!', True, (255, 0, 180))
-            ex_rect = ex_mark.get_rect(center=(int(self.position.x)+ox, int(self.position.y)+oy - self.radius - 18))
-            screen.blit(ex_mark, ex_rect)
-        
-        if self.role == 'harvester' and self.food_burst_active:
-            burst_color = (0, 255, 100)
-            pygame.draw.circle(screen, burst_color, (int(self.position.x)+ox, int(self.position.y)+oy), self.radius + 5, 2)
-            if self.priority_food_target:
-                pygame.draw.line(screen, burst_color, 
-                               (int(self.position.x)+ox, int(self.position.y)+oy),
-                               (int(self.priority_food_target.position.x)+ox, int(self.priority_food_target.position.y)+oy), 1)
-        
-        # Show reproduction readiness for harvesters
-        if (self.role == 'harvester' and 
-            self.reproduction_cooldown == 0 and 
-            self.energy >= self.reproduction_energy_threshold and
-            self.closest_food_distance <= 50):
-            reproduction_color = (255, 255, 100)  # Bright yellow
-            pygame.draw.circle(screen, reproduction_color, (int(self.position.x)+ox, int(self.position.y)+oy), self.radius + 8, 3)
-        
-        # Direction indicator
-        direction = self.velocity.normalize() * 10
-        end_x = self.position.x + direction.x
-        end_y = self.position.y + direction.y
-        pygame.draw.line(screen, WHITE, (self.position.x, self.position.y), (end_x, end_y), 1)
 
-        # Warrior attack visual effect
-        if self.role == 'warrior' and hasattr(self, 'attack_effect_timer') and self.attack_effect_timer > 0:
-            # Draw a red arc/slash in the direction of attack
-            attack_color = (255, 60, 60)
-            arc_radius = self.radius + 12
-            arc_width = 4
-            # Draw arc in direction of velocity
-            angle = math.atan2(self.velocity.y, self.velocity.x)
-            start_angle = angle - 0.5
-            end_angle = angle + 0.5
-            center = (int(self.position.x), int(self.position.y))
-            rect = pygame.Rect(center[0] - arc_radius, center[1] - arc_radius, arc_radius * 2, arc_radius * 2)
-            pygame.draw.arc(screen, attack_color, rect, start_angle, end_angle, arc_width)
-    
+    def align(self, swarm_bots: List['SwarmBot']) -> 'Vector2D':
+        # Steer towards the average heading of local flockmates
+        neighbor_dist = 40.0
+        sum_vel = Vector2D(0, 0)
+        count = 0
+        for other in swarm_bots:
+            if other is self:
+                continue
+            d = (self.position - other.position).magnitude()
+            if 0 < d < neighbor_dist:
+                sum_vel += other.velocity
+                count += 1
+        if count > 0:
+            avg_vel = sum_vel / count
+            avg_vel = avg_vel.normalize() * self.max_speed
+            steer = avg_vel - self.velocity
+            steer = steer.limit(self.max_force)
+            return steer
+        return Vector2D(0, 0)
+
+    def cohesion(self, swarm_bots: List['SwarmBot']) -> 'Vector2D':
+        # Steer to move toward the average position of local flockmates
+        neighbor_dist = 40.0
+        sum_pos = Vector2D(0, 0)
+        count = 0
+        for other in swarm_bots:
+            if other is self:
+                continue
+            d = (self.position - other.position).magnitude()
+            if 0 < d < neighbor_dist:
+                sum_pos += other.position
+                count += 1
+        if count > 0:
+            avg_pos = sum_pos / count
+            desired = avg_pos - self.position
+            if desired.magnitude() > 0:
+                desired = desired.normalize() * self.max_speed
+                steer = desired - self.velocity
+                steer = steer.limit(self.max_force)
+                return steer
+        return Vector2D(0, 0)
+
+    def seek_food(self, food_list: List['Food'], power_ups: List['PowerUp'], swarm_bots: List['SwarmBot']) -> 'Vector2D':
+        # Seek the nearest food or power-up
+        closest = None
+        closest_dist = float('inf')
+        for food in list(food_list) + list(power_ups):
+            d = (self.position - food.position).magnitude()
+            if d < closest_dist:
+                closest_dist = d
+                closest = food
+        if closest is not None:
+            desired = closest.position - self.position
+            if desired.magnitude() > 0:
+                return desired.normalize() * self.max_speed
+        return Vector2D(0, 0)
+
+    def update_miner_priority_targeting(self, rocks: list) -> None:
+        # Update miner's ore targeting and burst mode
+        if self.role != 'miner':
+            return
+        closest_rock = None
+        closest_distance = float('inf')
+        priority_range = float(self.role_data.get('priority_ore_range', 60))
+        for rock in rocks or []:
+            if hasattr(rock, 'ore_amount') and rock.ore_amount > 0:
+                distance = (self.position - rock.position).magnitude()
+                if distance < closest_distance:
+                    closest_distance = distance
+                    closest_rock = rock
+        self.closest_ore_distance = closest_distance
+        self.priority_ore_target = closest_rock
+        was_burst_active = getattr(self, 'ore_burst_active', False)
+        self.ore_burst_active = bool(closest_rock and closest_distance <= priority_range)
+        if self.ore_burst_active and not was_burst_active:
+            self.max_speed = self.base_max_speed * float(self.role_data.get('burst_speed_multiplier', 1.8))
+        elif not self.ore_burst_active and was_burst_active:
+            self.max_speed = self.base_max_speed
+
     def attack_predators(self, predators: List['Predator']) -> None:
-        """Warrior actively attacks nearby predators if in range"""
-        if self.role != 'warrior':
+        # Only hunters attack predators
+        if self.role != 'hunter' or not predators:
             return
-        # Add attack cooldown
-        if not hasattr(self, 'attack_cooldown'):
-            self.attack_cooldown = 0
-        if self.attack_cooldown > 0:
-            self.attack_cooldown -= 1
-            return
-        attack_range = float(self.role_data.get('attack_range', 25))  # Use updated default
+        attack_range = float(self.role_data.get('attack_range', 15))
         attack_damage = float(self.role_data.get('attack_damage', 20))
         if self.damage_boost_timer > 0:
-            attack_damage *= 2.0
-        attacked = False
+            attack_damage *= 2.0  # Double damage when boosted
         for predator in predators:
-            distance = math.sqrt((self.position.x - predator.position.x)**2 + (self.position.y - predator.position.y)**2)
+            distance = (self.position - predator.position).magnitude()
             if distance <= attack_range:
                 predator.health -= attack_damage
-                # Flash predator for feedback
-                if hasattr(predator, 'fight_flash_timer'):
-                    predator.fight_flash_timer = max(predator.fight_flash_timer, 8)
-                attacked = True
-        if attacked:
-            self.attack_cooldown = 15  # 15 frames cooldown
-            self.attack_effect_timer = 6  # Show for 6 frames (0.1s at 60 FPS)
-        # Decrement attack effect timer if active
+                # Visual feedback for attack
+                self.last_attack_target_pos = (predator.position.x, predator.position.y)
+                self.attack_effect_timer = 8  # Frames to show effect
+                break
+
+    def draw(self, screen: pygame.Surface, offset=(0, 0)) -> None:
+        """Draw the bot on the screen"""
+        ox, oy = offset
+        
+        # Draw trail first (behind the bot)
+        if len(self.trail) > 1:
+            trail_color = tuple(max(0, c - 150) for c in self.color)  # Darker version of bot color
+            for i in range(1, len(self.trail)):
+                alpha = int(255 * (i / len(self.trail)))  # Fade out older trail points
+                start_pos = (int(self.trail[i-1][0]) + ox, int(self.trail[i-1][1]) + oy)
+                end_pos = (int(self.trail[i][0]) + ox, int(self.trail[i][1]) + oy)
+                
+                # Create a surface with alpha for trail
+                trail_surface = pygame.Surface((abs(end_pos[0] - start_pos[0]) + 4, abs(end_pos[1] - start_pos[1]) + 4), pygame.SRCALPHA)
+                pygame.draw.line(trail_surface, (*trail_color, alpha), 
+                               (2, 2), (end_pos[0] - start_pos[0] + 2, end_pos[1] - start_pos[1] + 2), 2)
+                screen.blit(trail_surface, (min(start_pos[0], end_pos[0]) - 2, min(start_pos[1], end_pos[1]) - 2))
+        
+        # Main bot color
+        bot_color = self.color
+        
+        # Color modifications based on state
         if hasattr(self, 'attack_effect_timer') and self.attack_effect_timer > 0:
+            # Flash when attacking
+            bot_color = (255, 255, 255) if self.attack_effect_timer % 2 == 0 else self.color
             self.attack_effect_timer -= 1
+        elif self.health < 30:
+            # Red tint when low health
+            bot_color = tuple(min(255, c + 50) if i == 0 else max(0, c - 50) for i, c in enumerate(self.color))
+        elif self.speed_boost_timer > 0 or self.damage_boost_timer > 0:
+            # Bright glow when buffed
+            bot_color = tuple(min(255, c + 30) for c in self.color)
+        
+        # Draw bot circle
+        center = (int(self.position.x) + ox, int(self.position.y) + oy)
+        pygame.draw.circle(screen, bot_color, center, self.radius)
+        
+        # Draw role-specific indicators
+        if self.role == 'leader':
+            # Leader gets a crown/star
+            pygame.draw.circle(screen, (255, 255, 0), center, self.radius + 3, 2)
+        elif self.role == 'hunter':
+            # Hunter gets spikes
+            pygame.draw.circle(screen, (255, 100, 100), center, self.radius + 2, 1)
+        elif self.role == 'scout':
+            # Scout gets extended vision circle
+            pygame.draw.circle(screen, (100, 255, 255), center, self.radius + 1, 1)
+        elif self.role in ('gatherer', 'harvester'):
+            # Gatherer/Harvester shows what they're carrying
+            if hasattr(self, 'carrying_food') and self.carrying_food > 0:
+                pygame.draw.circle(screen, (0, 255, 0), center, self.radius + 2, 1)
+        elif self.role == 'miner':
+            # Miner shows ore carrying
+            if hasattr(self, 'carrying_ore') and self.carrying_ore > 0:
+                pygame.draw.circle(screen, (139, 69, 19), center, self.radius + 2, 1)  # Brown for ore
+        
+        # Draw health bar if damaged
+        if self.health < 100:
+            bar_width = self.radius * 2
+            bar_height = 3
+            bar_x = center[0] - self.radius
+            bar_y = center[1] - self.radius - 6
+            
+            # Background (red)
+            pygame.draw.rect(screen, (100, 0, 0), (bar_x, bar_y, bar_width, bar_height))
+            
+            # Health (green to red gradient)
+            health_ratio = self.health / 100.0
+            health_width = int(bar_width * health_ratio)
+            if health_ratio > 0.6:
+                health_color = (0, 255, 0)
+            elif health_ratio > 0.3:
+                health_color = (255, 255, 0)
+            else:
+                health_color = (255, 0, 0)
+            
+            if health_width > 0:
+                pygame.draw.rect(screen, health_color, (bar_x, bar_y, health_width, bar_height))
+        
+        # Draw direction indicator
+        if self.velocity.magnitude() > 0.1:
+            direction = self.velocity.normalize() * (self.radius + 3)
+            end_x = self.position.x + ox + direction.x
+            end_y = self.position.y + oy + direction.y
+            pygame.draw.line(screen, (255, 255, 255), center, (int(end_x), int(end_y)), 1)

@@ -17,8 +17,9 @@ setup(
     description="A sophisticated swarm intelligence simulation with autonomous bots and emergent behaviors",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/yourusername/swarm-tank-simulation",
+    url="https://github.com/StuxnetStudios/swarm-tank-simulation",
     packages=find_packages(),
+    py_modules=["swarm_tank"],
     classifiers=[
         "Development Status :: 4 - Beta",
         "Intended Audience :: Education",
@@ -52,8 +53,8 @@ setup(
     },
     keywords="swarm intelligence, simulation, pygame, artificial intelligence, emergent behavior",
     project_urls={
-        "Bug Reports": "https://github.com/yourusername/swarm-tank-simulation/issues",
-        "Source": "https://github.com/yourusername/swarm-tank-simulation",
-        "Documentation": "https://github.com/yourusername/swarm-tank-simulation/blob/main/README.md",
+        "Bug Reports": "https://github.com/StuxnetStudios/swarm-tank-simulation/issues",
+        "Source": "https://github.com/StuxnetStudios/swarm-tank-simulation",
+        "Documentation": "https://github.com/StuxnetStudios/swarm-tank-simulation/blob/main/README.md",
     },
 )

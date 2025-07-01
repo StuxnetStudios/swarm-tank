@@ -6,14 +6,14 @@ A sophisticated swarm intelligence simulation featuring autonomous bots with dif
 
 ### 🤖 **Bot Roles & Behaviors**
 - **Harvesters** (Magenta): Collect food, reproduce when well-fed
-- **Warriors** (Purple): Defend the swarm, attack predators, taunt enemies
+- **Hunters** (Purple): Defend the swarm, attack predators, taunt enemies
 - **Scouts** (Cyan): Fast scouts that find food and alert others
 - **Drones** (Blue): Maintain formation and swarm cohesion
 - **Leaders** (Yellow): Guide swarm movement and formation
 
 ### 🔴 **Predator System**
 - **Health System**: Predators start at 50% health, gain health from kills
-- **Combat**: Warriors can damage predators in close combat
+- **Combat**: Hunters can damage predators in close combat
 - **Mortality**: Predators die from starvation or damage
 - **Food Drops**: Dead predators drop 3-5 food items
 - **Visual Indicators**: Health bars and kill count display
@@ -21,7 +21,7 @@ A sophisticated swarm intelligence simulation featuring autonomous bots with dif
 ### ⚡ **Power-Up System**
 - **Swarm-Wide Buffs**: Power-ups affect the entire swarm
 - **Speed Boost**: +50% movement speed for 5 seconds
-- **Damage Boost**: Double damage for warriors for 5 seconds
+- **Damage Boost**: Double damage for hunters for 5 seconds
 - **Energy Boost**: Restores energy to collector only
 - **Visual Effects**: Pulsing rings around buffed bots
 
@@ -67,7 +67,7 @@ python swarm_tank.py
 
 ### **Role-Specific Abilities**
 - **Scouts**: Shout food locations to nearby bots
-- **Warriors**: Taunt predators and deal combat damage
+- **Hunters**: Taunt predators and deal combat damage
 - **Harvesters**: Burst speed near food, reproduction capability
 - **Drones**: Strong cohesion for formation maintenance
 - **Leaders**: Balanced stats for group coordination

@@ -8,7 +8,7 @@ import math
 from typing import List, TYPE_CHECKING
 
 from vector2d import Vector2D
-from roles import RED, WHITE, GREEN, MAGENTA, CYAN, ORANGE
+from roles import RED, WHITE, GREEN
 
 if TYPE_CHECKING:
     from swarm_bot import SwarmBot
@@ -19,7 +19,7 @@ class Food:
     def __init__(self, x: float, y: float):
         self.position = Vector2D(x, y)
         self.radius = 5
-        self.energy_value = 20
+        self.health_value = 20
         self.color = GREEN
     
     def draw(self, screen: pygame.Surface, offset=(0, 0)) -> None:
@@ -30,22 +30,24 @@ class Food:
 
 class PowerUp:
     """Special power-up that provides enhanced benefits"""
-    def __init__(self, x: float, y: float, power_type: str = 'energy'):
+    def __init__(self, x: float, y: float, power_type: str = 'health'):
         self.position = Vector2D(x, y)
         self.radius = 8
         self.power_type = power_type
         self.glow_intensity = 0
         self.glow_direction = 1
         
-        if power_type == 'energy':
-            self.color = MAGENTA
-            self.energy_value = 50
+        if power_type == 'health':
+            self.color = (0, 255, 0)
+            self.health_value = 50
         elif power_type == 'speed':
-            self.color = CYAN
-            self.energy_value = 30
+            self.color = (0, 200, 255)
+            self.health_value = 30
         elif power_type == 'damage':
-            self.color = ORANGE
-            self.energy_value = 30
+            self.color = (255, 120, 0)
+            self.health_value = 30
+        else:
+            self.color = (255, 255, 255)
     
     def update(self) -> None:
         """Update visual effects"""
@@ -71,6 +73,8 @@ class PowerUp:
 
 class Predator:
     """Predator that chases the swarm"""
+    _predator_count = 0  # Class variable for unique naming
+
     def __init__(self, x: float, y: float, screen_width: int = 1200, screen_height: int = 800):
         self.position = Vector2D(x, y)
         self.velocity = Vector2D(random.uniform(-1, 1), random.uniform(-1, 1))
@@ -83,15 +87,15 @@ class Predator:
         self.hunt_radius = 150  # Restore original detection range
         self.kill_radius = 12  # Distance at which they can kill bots
         self.max_health = 100.0
-        self.health = 80.0  # Start at 80% health (was energy before)
+        self.health = 80.0  # Start at 80% health
         self.attack_cooldown = 0
         self.kills = 0
         self.screen_width = screen_width
         self.screen_height = screen_height
         self.buff_timers = {'speed': 0, 'damage': 0}  # For power-up buffs
         self.fight_flash_timer = 0  # Frames to flash when fighting
-        # Ensure all attributes used in update logic are always present
-        # (already present above, but add more here if new ones are added in update logic)
+        Predator._predator_count += 1
+        self.name = f"Predator {Predator._predator_count}"
 
     def apply_force(self, force: Vector2D) -> None:
         """Apply a force to the predator (adds to acceleration)"""
@@ -99,7 +103,7 @@ class Predator:
             self.acceleration = Vector2D(0, 0)
         self.acceleration += force
 
-    def update(self, swarm_bots: List['SwarmBot'], food_list: list = None, all_predators: list = None, power_ups: list = None, obstacles: list = None, fight_mode: bool = False) -> List['SwarmBot']:
+    def update(self, swarm_bots: List['SwarmBot'], food_list: list = None, all_predators: list = None, power_ups: list = None, rocks: list = None, fight_mode: bool = False) -> List['SwarmBot']:
         """Update predator behavior and return list of killed bots (or predators if fight_mode)"""
         killed_bots: List['SwarmBot'] = []
         if fight_mode:
@@ -141,13 +145,35 @@ class Predator:
             # Cooldown
             if self.attack_cooldown > 0:
                 self.attack_cooldown -= 1
+            # --- Ensure close-range dramatic fight/bounce always runs in fight mode ---
+            if all_predators is not None:
+                for other in all_predators:
+                    if other is self:
+                        continue
+                    dist = (self.position - other.position).magnitude()
+                    fight_range = 14  # much shorter range than before
+                    min_dist = self.radius + other.radius
+                    if dist < fight_range and dist > 0:
+                        # Both lose more health (dramatic fight damage)
+                        self.health -= 18.0
+                        other.health -= 18.0
+                        # Dramatic bounce apart
+                        push = (self.position - other.position).normalize() * (fight_range - dist + 4)
+                        self.position += push
+                        other.position -= push
+                        # Both get a longer attack cooldown to prevent rapid fighting
+                        self.attack_cooldown = max(self.attack_cooldown, 18)
+                        other.attack_cooldown = max(other.attack_cooldown, 18)
+                        # Flash both predators magenta for longer
+                        self.fight_flash_timer = 18
+                        other.fight_flash_timer = 18
             return killed_bots
         
         # Update attack cooldown
         if self.attack_cooldown > 0:
             self.attack_cooldown -= 1
         
-        # Find closest bot with priority for low-energy bots
+        # Find closest bot with priority for low-health bots
         closest_bot = None
         closest_distance = float('inf')
         
@@ -179,11 +205,11 @@ class Predator:
             distance = math.sqrt((self.position.x - bot.position.x)**2 + 
                                (self.position.y - bot.position.y)**2)
             
-            # Prioritize weak/low-energy bots
+            # Prioritize weak/low-health bots
             priority_multiplier = 1.0
-            if bot.energy < 30:
+            if bot.health < 30:
                 priority_multiplier = 0.5  # Make weak bots more attractive targets
-            elif bot.energy < 50:
+            elif bot.health < 50:
                 priority_multiplier = 0.8
             
             adjusted_distance = distance * priority_multiplier
@@ -281,29 +307,28 @@ class Predator:
                 avoid_force = avoid_force.normalize() * self.max_force
                 self.velocity = self.velocity + avoid_force
         
-        # Avoid obstacles or take damage if colliding
-        if obstacles:
-            for obstacle in obstacles:
-                offset = self.position - obstacle.position
+        # Avoid rocks or take damage if colliding
+        if rocks:
+            for rock in rocks:
+                offset = self.position - rock.position
                 dist = offset.magnitude()
-                min_dist = self.radius + obstacle.radius + 2
+                min_dist = self.radius + rock.radius + 2
                 if dist < min_dist:
-                    # Take damage if colliding
-                    self.health -= 2.0  # Increased damage per frame in obstacle
-                    # Push predator out of obstacle
+                    self.health -= 2.0  # Increased damage per frame in rock
+                    # Push predator out of rock
                     if dist > 0:
                         push = offset.normalize() * (min_dist - dist + 1)
                         self.position += push
-                        # Apply impact to obstacle (momentum transfer)
-                        if hasattr(obstacle, 'impact'):
-                            obstacle.impact(-push * 0.07)  # Much smaller for predators
-                    # Flash obstacle
-                    if hasattr(obstacle, 'flash'):
-                        obstacle.flash()
+                        # Apply impact to rock (momentum transfer)
+                        if hasattr(rock, 'impact'):
+                            rock.impact(-push * 0.07)
+                    # Flash rock
+                    if hasattr(rock, 'flash'):
+                        rock.flash()
                 elif dist < min_dist + 30:
                     # Steer away if near
                     avoid_force = offset.normalize() * (1.5 * (min_dist + 30 - dist) / 30)
-                    self.velocity += avoid_force
+                    self.acceleration += avoid_force
 
         # Predator vs Predator FIGHT: if colliding, both lose health and bounce (more dramatic, shorter range)
         if all_predators is not None:
@@ -343,8 +368,8 @@ class Predator:
                     elif power_up.power_type == 'damage':
                         self.buff_timers['damage'] = 300
                         self.attack_cooldown = max(0, self.attack_cooldown - 10)
-                    elif power_up.power_type == 'energy':
-                        self.health = min(self.max_health, self.health + power_up.energy_value)
+                    elif power_up.power_type == 'health':
+                        self.health = min(self.max_health, self.health + power_up.health_value)
                     power_ups.remove(power_up)
                     break
         # PredatorFood collection (edible by both bots and predators)
@@ -353,7 +378,7 @@ class Predator:
             if isinstance(food, PredatorFood):
                 distance = (self.position - food.position).magnitude()
                 if distance < self.radius + food.radius:
-                    self.health = min(self.max_health, self.health + food.energy_value)
+                    self.health = min(self.max_health, self.health + food.health_value)
                     food_list.remove(food)
                     break
         # Predator buff timer management
@@ -384,6 +409,29 @@ class Predator:
         elif self.position.y > self.screen_height:
             self.position.y = 0
         
+        # --- Home attack logic: if 2+ predators are in range, attack Home ---
+        home = None
+        if rocks:
+            for r in rocks:
+                if hasattr(r, 'hitpoints') and hasattr(r, 'take_damage'):
+                    home = r
+                    break
+        if home is not None:
+            # Count predators in range of Home
+            predators_in_range = 0
+            for pred in all_predators or []:
+                if pred is self:
+                    continue
+                dist = (pred.position - home.position).magnitude()
+                if dist < home.radius + self.radius + 30:
+                    predators_in_range += 1
+            # If 2+ predators in range, attack Home
+            if predators_in_range >= 2:
+                dist_to_home = (self.position - home.position).magnitude()
+                if dist_to_home < home.radius + self.radius + 30 and self.attack_cooldown == 0:
+                    home.take_damage(60)  # Deal 60 damage per attack
+                    self.attack_cooldown = 30
+
         return killed_bots
     
     def draw(self, screen: pygame.Surface, offset=(0, 0)) -> None:
@@ -398,49 +446,56 @@ class Predator:
 
         pygame.draw.circle(screen, color, (int(self.position.x)+ox, int(self.position.y)+oy), self.radius)
         pygame.draw.circle(screen, (255, 100, 100), (int(self.position.x)+ox, int(self.position.y)+oy), self.radius + 2, 1)
-        
-        # Draw health bar above predator
+
+        # Draw name label above predator (topmost)
+        font = pygame.font.Font(None, 20)
+        name_surface = font.render(self.name, True, (255, 255, 255))
+        name_rect = name_surface.get_rect()
+        name_rect.center = (int(self.position.x)+ox, int(self.position.y)+oy - self.radius - 28)
+        screen.blit(name_surface, name_rect)
+
+        # Draw health bar above predator (below name)
         bar_width = 30
         bar_height = 4
         bar_x = int(self.position.x + ox - bar_width // 2)
-        bar_y = int(self.position.y + oy - self.radius - 10)
-        
+        bar_y = int(self.position.y + oy - self.radius - 18)
+
         # Background bar (red)
         pygame.draw.rect(screen, (100, 0, 0), (bar_x, bar_y, bar_width, bar_height))
-        
+
         # Health bar (green to red gradient based on health percentage)
         health_percentage = self.health / self.max_health
         health_width = int(bar_width * health_percentage)
-        
+
         if health_percentage > 0.6:
             health_color = (0, 255, 0)  # Green
         elif health_percentage > 0.3:
             health_color = (255, 255, 0)  # Yellow
         else:
             health_color = (255, 0, 0)  # Red
-        
+
         if health_width > 0:
             pygame.draw.rect(screen, health_color, (bar_x, bar_y, health_width, bar_height))
-        
+
         # Health bar border
         pygame.draw.rect(screen, (255, 255, 255), (bar_x, bar_y, bar_width, bar_height), 1)
 
-        # Show kills count with text above predator
+        # Show kills count with text above predator (below health bar)
         if self.kills > 0:
             font = pygame.font.Font(None, 18)
-            kill_text = str(self.kills)
+            kill_text = f"Kills: {self.kills}"
             text_surface = font.render(kill_text, True, (255, 255, 0))  # Yellow text
-            text_x = int(self.position.x + ox - 7)
-            text_y = int(self.position.y + oy - self.radius - 25)
-            screen.blit(text_surface, (text_x, text_y))
+            text_rect = text_surface.get_rect()
+            text_rect.center = (int(self.position.x)+ox, int(self.position.y)+oy - self.radius - 8)
+            screen.blit(text_surface, text_rect)
 
         # Draw kill radius when hunting (using regular red)
         if self.attack_cooldown == 0:
             pygame.draw.circle(screen, (255, 0, 0), (int(self.position.x)+ox, int(self.position.y)+oy), self.kill_radius, 1)
-        
+
         # Draw hunt radius (faded red)
         pygame.draw.circle(screen, (100, 0, 0), (int(self.position.x)+ox, int(self.position.y)+oy), min(self.hunt_radius, 80), 1)
-        
+
         # Direction indicator (predator facing direction)
         direction = self.velocity.normalize() * 15
         end_x = self.position.x + ox + direction.x
